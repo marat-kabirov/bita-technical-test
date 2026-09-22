@@ -59,12 +59,7 @@ def delete_constituent(record_id: int, db: Session = Depends(get_db)):
     return DeleteResponse(id=record.id, deleted=True, deleted_at=record.deleted_at)
 
 
-def stream_csv(start_date: date, end_date: date):
-    """
-    Streams the CSV export row by row using its own DB session, since this
-    generator keeps running after the request's Depends(get_db) session
-    would normally be closed by FastAPI.
-    """
+def _stream_csv_rows(start_date: date, end_date: date):
     db = SessionLocal()
     try:
         header_buf = io.StringIO()
@@ -86,6 +81,22 @@ def stream_csv(start_date: date, end_date: date):
             row_buf.truncate(0)
     finally:
         db.close()
+
+
+async def stream_csv(start_date: date, end_date: date):
+    """
+    Wraps the synchronous row generator so that when the client disconnects
+    mid-stream, Starlette can call .aclose() on this async generator, which
+    in turn closes the underlying sync generator — running its `finally`
+    block (db.close()) promptly instead of waiting on garbage
+    collection.
+    """
+    gen = _stream_csv_rows(start_date, end_date)
+    try:
+        for chunk in gen:
+            yield chunk
+    finally:
+        gen.close()
 
 
 @app.get("/constituents/export")
