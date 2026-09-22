@@ -99,15 +99,6 @@ the window is applied so that a deleted "current" row correctly falls back to th
 most recent surviving version of the same key, rather than removing the key from the
 result entirely.
 
-**Note on scope — point-in-time reconstruction:** `/export` always resolves to the
-*latest* non-deleted ingested version per business key at query time. It does not
-currently support reconstructing "what the index looked like as of a past point in time"
-— i.e. querying "as it was believed to be" using `ingested_at` as of some earlier moment,
-rather than always taking the latest. The append-only data model retains everything
-needed to add this (an `as_of` parameter filtering on `ingested_at` before the window
-function is applied), but implementing that query path was judged out of scope for this
-exercise.
-
 ### Delete semantics
 `DELETE /constituents/{id}` targets a specific ingested row by its own surrogate id, not
 the business key as a whole. This was a deliberate choice: since a business key can have
