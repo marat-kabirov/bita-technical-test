@@ -31,9 +31,9 @@ pip install -r requirements.txt
 
 Create a `.env` file in the project root (see `.env.example`):
 
-​```
+```
 DATABASE_URL=postgresql://<user>:<password>@localhost:5432/<database_name>
-​```
+```
 
 Create the target database (e.g. via psql or pgAdmin):
 
@@ -111,10 +111,19 @@ resolution logic above, without any extra bookkeeping.
 ### Bulk insert without `COPY`
 Per the exercise restrictions, `COPY` and other native bulk-import mechanisms are not
 used. Instead, rows are parsed with the standard library `csv` module and inserted via
-SQLAlchemy's `bulk_insert_mappings`, in batches of 500 rows. This issues batched
-multi-row `INSERT` statements (effectively `executemany` under the hood) rather than one
-round-trip per row, which is meaningfully faster than row-by-row ORM inserts while
-staying well clear of the `COPY` protocol.
+SQLAlchemy Core's `insert()` construct, executed in batches of 500 rows via
+`db.execute(insert(ConstituentRecord), batch)`. This issues batched multi-row `INSERT`
+statements (effectively `executemany` under the hood) rather than one round-trip per row,
+which is meaningfully faster than row-by-row ORM inserts while staying well clear of the
+`COPY` protocol.
+
+### Error handling on ingestion
+Row-level validation reports the specific invalid row and the reason it failed, but a
+validation failure anywhere in the file rolls back the entire upload — partial loads are
+never committed. **Alternative considered and discarded:** accepting valid rows and
+reporting invalid ones separately as a partial-success response. This was rejected to
+keep each upload atomic and avoid ambiguity about which rows from a single file actually
+made it into the "current" view after a partially-failed load.
 
 ### Alternatives considered and discarded
 - **A `deleted` flag resolved *after* the window function**, rather than before: this
@@ -126,6 +135,10 @@ staying well clear of the `COPY` protocol.
   system handling schema evolution over time would use proper migrations.
 - **Unique constraint on the business key**: deliberately not added, since the exercise
   explicitly allows the same business key to appear multiple times across loads.
+- **Streaming file processing**: the uploaded file is read fully into memory before
+  parsing, rather than processed as a stream. This is adequate for files in the 1–20MB
+  range typical of this exercise; a production system ingesting much larger files would
+  switch to streaming CSV parsing to bound memory usage.
 
 ## Tests
 
