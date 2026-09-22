@@ -134,6 +134,15 @@ statements (effectively `executemany` under the hood) rather than one round-trip
 which is meaningfully faster than row-by-row ORM inserts while staying well clear of the
 `COPY` protocol.
 
+### Streaming upload
+The uploaded file is not read into memory as a whole before parsing. `UploadFile.file`
+is already a spooled temporary file (buffered in memory up to ~1MB, then spilled to
+disk), so it's wrapped directly in `io.TextIOWrapper` and fed to `csv.DictReader`, which
+reads and parses the file incrementally, row by row, rather than materialising the full
+file content as a single string first. A `UnicodeDecodeError` raised mid-file (rather
+than up front, since decoding now happens lazily per line) is still caught and returns
+the same `400` response with the file's rejection reason.
+
 ### Streaming export
 The CSV export path streams results row by row rather than materialising the full
 result set in memory: `get_current_constituents` uses `yield_per(1000)`, which issues
@@ -167,11 +176,6 @@ made it into the "current" view after a partially-failed load.
   system handling schema evolution over time would use proper migrations.
 - **Unique constraint on the business key**: deliberately not added, since the exercise
   explicitly allows the same business key to appear multiple times across loads.
-- **Streaming file processing**: the uploaded file is read fully into memory before
-  parsing, rather than processed as a stream. This is adequate for files in the 1–20MB
-  range typical of this exercise; a production system ingesting much larger files would
-  switch to streaming CSV parsing to bound memory usage. (Note: this applies to the
-  *upload* path only — the *export* path is streamed, see "Streaming export" above.)
 
 ## Tests
 

@@ -30,8 +30,8 @@ def upload_constituents(
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only .csv files are accepted")
 
-    file_bytes = file.file.read()
-    upload = ingest_csv(db, file.filename, file_bytes)
+    text_stream = io.TextIOWrapper(file.file, encoding="utf-8-sig", newline="")
+    upload = ingest_csv(db, file.filename, text_stream)
 
     return UploadResponse(
         upload_id=upload.id,

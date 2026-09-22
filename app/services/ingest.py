@@ -1,5 +1,4 @@
 import csv
-import io
 import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -44,16 +43,8 @@ def parse_row(row: dict, line_number: int) -> dict:
     }
 
 
-def ingest_csv(db: Session, filename: str, file_bytes: bytes) -> Upload:
-    try:
-        text = file_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="File is not valid UTF-8 encoded text",
-        )
-
-    reader = csv.DictReader(io.StringIO(text))
+def ingest_csv(db: Session, filename: str, text_stream) -> Upload:
+    reader = csv.DictReader(text_stream)
 
     missing_columns = REQUIRED_COLUMNS - set(reader.fieldnames or [])
     if missing_columns:
@@ -71,21 +62,26 @@ def ingest_csv(db: Session, filename: str, file_bytes: bytes) -> Upload:
     batch = []
     row_count = 0
 
-    for line_number, row in enumerate(reader, start=2):
-        try:
-            parsed = parse_row(row, line_number)
-        except (ValueError, KeyError) as e:
-            db.rollback()
-            logger.error(f"Ingestion of '{filename}' failed at CSV line {line_number}: {e}")
-            raise HTTPException(status_code=400, detail=f"Error at line {line_number}: {e}")
+    try:
+        for line_number, row in enumerate(reader, start=2):
+            try:
+                parsed = parse_row(row, line_number)
+            except (ValueError, KeyError) as e:
+                db.rollback()
+                logger.error(f"Ingestion of '{filename}' failed at CSV line {line_number}: {e}")
+                raise HTTPException(status_code=400, detail=f"Error at line {line_number}: {e}")
 
-        parsed["upload_id"] = upload.id
-        batch.append(parsed)
-        row_count += 1
+            parsed["upload_id"] = upload.id
+            batch.append(parsed)
+            row_count += 1
 
-        if len(batch) >= BATCH_SIZE:
-            db.execute(insert(ConstituentRecord), batch)
-            batch.clear()
+            if len(batch) >= BATCH_SIZE:
+                db.execute(insert(ConstituentRecord), batch)
+                batch.clear()
+    except UnicodeDecodeError:
+        db.rollback()
+        logger.error(f"Ingestion of '{filename}' failed: file is not valid UTF-8")
+        raise HTTPException(status_code=400, detail="File is not valid UTF-8 encoded text")
 
     if batch:
         db.execute(insert(ConstituentRecord), batch)
