@@ -13,7 +13,7 @@ preserving a full ingestion history, and exposes it through a small REST API.
 
 If you don't have PostgreSQL installed locally, a `docker-compose.yml` is provided:
 
-```powershell
+```bash
 docker-compose up -d
 ```
 
@@ -23,9 +23,17 @@ in this case.
 
 ### Installation
 
+**Windows (PowerShell):**
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+**macOS / Linux (bash):**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -43,7 +51,7 @@ CREATE DATABASE bita_test;
 
 ### Running
 
-```powershell
+```bash
 uvicorn app.main:app --reload
 ```
 
@@ -167,7 +175,7 @@ made it into the "current" view after a partially-failed load.
 
 ## Tests
 
-```powershell
+```bash
 pytest
 ```
 
@@ -177,6 +185,8 @@ a database whose data you want to keep — set `TEST_DATABASE_URL` to a separate
 first.
 
 Covers: CSV ingestion (row counts persisted correctly), repeated uploads not overwriting
-prior data, soft-delete behavior, current-resolution/export logic including the
-delete-then-fallback edge case, and a deterministic tie-break when the same business key
-appears twice within a single upload.
+prior data, soft-delete behavior (both hiding from export and physical persistence in
+the database), current-resolution/export logic including the delete-then-fallback edge
+case, a deterministic tie-break when the same business key appears twice within a single
+upload, atomic rollback on invalid rows (no `uploads` or `constituent_records` rows left
+behind), and CSV export content (parsed and checked against the uploaded values).

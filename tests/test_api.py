@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.db import Base, get_db
+from app import models
 
 # Tests run against TEST_DATABASE_URL if set, falling back to DATABASE_URL only if not.
 # WARNING: this fixture calls drop_all() on whatever database this resolves to.
@@ -149,3 +150,69 @@ def test_csv_export_format():
     assert response.headers["content-type"].startswith("text/csv")
     content = response.text
     assert content.count("\n") >= 2
+
+
+def test_invalid_row_rolls_back_entire_upload():
+    bad_csv = (
+        "index_code,isin,ticker,name,weight,shares,effective_date\n"
+        "TESTIDX,US0000000001,AAA,Alpha Corp,10.5,1000,2026-01-01\n"
+        "TESTIDX,US0000000002,BBB,Beta Corp,not_a_number,2000,2026-01-01\n"
+    )
+
+    response = upload_csv(bad_csv, filename="bad.csv")
+    assert response.status_code == 400
+
+    # nothing from this upload should have been committed: no uploads row,
+    # and no constituent_records row, even for the valid line before the bad one
+    db = TestSessionLocal()
+    try:
+        upload_count = db.query(models.Upload).count()
+        record_count = db.query(models.ConstituentRecord).count()
+        assert upload_count == 0
+        assert record_count == 0
+    finally:
+        db.close()
+
+
+def test_delete_preserves_row_in_database():
+    upload_csv(SAMPLE_CSV)
+
+    export = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "json"},
+    ).json()
+    record_id = export[0]["id"]
+
+    client.delete(f"/constituents/{record_id}")
+
+    # the row must still physically exist in the database, not just be
+    # excluded from /export — this is the "recoverable at all times" requirement
+    db = TestSessionLocal()
+    try:
+        record = db.get(models.ConstituentRecord, record_id)
+        assert record is not None
+        assert record.is_deleted is True
+        assert record.deleted_at is not None
+    finally:
+        db.close()
+
+
+def test_csv_export_content_matches_uploaded_data():
+    upload_csv(SAMPLE_CSV)
+    response = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "csv"},
+    )
+    assert response.status_code == 200
+
+    import csv as csv_module
+    import io as io_module
+
+    reader = csv_module.DictReader(io_module.StringIO(response.text))
+    rows = {row["isin"]: row for row in reader}
+
+    assert len(rows) == 2
+    assert rows["US0000000001"]["ticker"] == "AAA"
+    assert float(rows["US0000000001"]["weight"]) == 10.5
+    assert rows["US0000000002"]["ticker"] == "BBB"
+    assert float(rows["US0000000002"]["weight"]) == 20.5
