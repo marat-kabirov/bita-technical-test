@@ -13,7 +13,10 @@ def get_current_constituents(db: Session, start_date: date, end_date: date):
                 ConstituentRecord.isin,
                 ConstituentRecord.effective_date,
             ],
-            order_by=ConstituentRecord.ingested_at.desc(),
+            order_by=[
+                ConstituentRecord.ingested_at.desc(),
+                ConstituentRecord.id.desc(),
+            ],
         )
         .label("rn")
     )

@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -23,14 +23,14 @@ def health_check():
 
 
 @app.post("/upload", response_model=UploadResponse)
-async def upload_constituents(
+def upload_constituents(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    if not file.filename.endswith(".csv"):
+    if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only .csv files are accepted")
 
-    file_bytes = await file.read()
+    file_bytes = file.file.read()
     upload = ingest_csv(db, file.filename, file_bytes)
 
     return UploadResponse(
@@ -52,7 +52,7 @@ def delete_constituent(record_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Record already deleted")
 
     record.is_deleted = True
-    record.deleted_at = datetime.now()
+    record.deleted_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(record)
 

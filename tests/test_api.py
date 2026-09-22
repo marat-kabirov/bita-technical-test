@@ -1,9 +1,37 @@
 import io
+import os
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.main import app
-from app.db import Base, engine, SessionLocal
+from app.db import Base, get_db
+
+# Tests run against TEST_DATABASE_URL if set, falling back to DATABASE_URL only if not.
+# WARNING: this fixture calls drop_all() on whatever database this resolves to.
+# Do NOT run the test suite against a database whose data you want to keep.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+
+if not TEST_DATABASE_URL:
+    raise RuntimeError(
+        "TEST_DATABASE_URL (or DATABASE_URL) must be set to run the test suite. "
+        "This database WILL be wiped by the tests — do not point it at data you need."
+    )
+
+test_engine = create_engine(TEST_DATABASE_URL)
+TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+
+
+def override_get_db():
+    db = TestSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+app.dependency_overrides[get_db] = override_get_db
 
 client = TestClient(app)
 
@@ -22,8 +50,8 @@ SAMPLE_CSV_UPDATED = (
 
 @pytest.fixture(autouse=True)
 def clean_db():
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.drop_all(bind=test_engine)
+    Base.metadata.create_all(bind=test_engine)
     yield
 
 
@@ -91,7 +119,7 @@ def test_delete_falls_back_to_previous_version():
     ).json()
 
     target = next(row for row in export if row["isin"] == "US0000000001")
-    current_id = target["id"]  
+    current_id = target["id"]
 
     client.delete(f"/constituents/{current_id}")
 
@@ -103,7 +131,7 @@ def test_delete_falls_back_to_previous_version():
     assert len(export_after) == 2
     fallback = next(row for row in export_after if row["isin"] == "US0000000001")
     assert fallback["id"] != current_id
-    assert float(fallback["weight"]) == 10.5 
+    assert float(fallback["weight"]) == 10.5
 
 
 def test_delete_nonexistent_record_returns_404():
@@ -120,4 +148,4 @@ def test_csv_export_format():
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
     content = response.text
-    assert content.count("\n") >= 2 
+    assert content.count("\n") >= 2
