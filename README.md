@@ -99,6 +99,15 @@ the window is applied so that a deleted "current" row correctly falls back to th
 most recent surviving version of the same key, rather than removing the key from the
 result entirely.
 
+**Note on scope — point-in-time reconstruction:** `/export` always resolves to the
+*latest* non-deleted ingested version per business key at query time. It does not
+currently support reconstructing "what the index looked like as of a past point in time"
+— i.e. querying "as it was believed to be" using `ingested_at` as of some earlier moment,
+rather than always taking the latest. The append-only data model retains everything
+needed to add this (an `as_of` parameter filtering on `ingested_at` before the window
+function is applied), but implementing that query path was judged out of scope for this
+exercise.
+
 ### Delete semantics
 `DELETE /constituents/{id}` targets a specific ingested row by its own surrogate id, not
 the business key as a whole. This was a deliberate choice: since a business key can have
@@ -146,6 +155,12 @@ made it into the "current" view after a partially-failed load.
 pytest
 ```
 
+**⚠️ Warning:** the test suite calls `drop_all()` against the database pointed to by
+`TEST_DATABASE_URL` (falling back to `DATABASE_URL` if unset). Do not run tests against
+a database whose data you want to keep — set `TEST_DATABASE_URL` to a separate database
+first.
+
 Covers: CSV ingestion (row counts persisted correctly), repeated uploads not overwriting
-prior data, soft-delete behavior, and current-resolution/export logic including the
-delete-then-fallback edge case.
+prior data, soft-delete behavior, current-resolution/export logic including the
+delete-then-fallback edge case, and a deterministic tie-break when the same business key
+appears twice within a single upload.
