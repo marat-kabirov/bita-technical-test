@@ -32,5 +32,3 @@ class DeleteResponse(BaseModel):
 
 
 ExportFormat = Literal["json", "csv"]
-
-# (DeleteResponse уже есть выше, ничего добавлять не нужно)
