@@ -45,7 +45,14 @@ def parse_row(row: dict, line_number: int) -> dict:
 
 
 def ingest_csv(db: Session, filename: str, file_bytes: bytes) -> Upload:
-    text = file_bytes.decode("utf-8-sig")
+    try:
+        text = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="File is not valid UTF-8 encoded text",
+        )
+
     reader = csv.DictReader(io.StringIO(text))
 
     missing_columns = REQUIRED_COLUMNS - set(reader.fieldnames or [])
