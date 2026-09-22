@@ -126,6 +126,21 @@ statements (effectively `executemany` under the hood) rather than one round-trip
 which is meaningfully faster than row-by-row ORM inserts while staying well clear of the
 `COPY` protocol.
 
+### Streaming export
+The CSV export path streams results row by row rather than materialising the full
+result set in memory: `get_current_constituents` uses `yield_per(1000)`, which issues
+a server-side cursor against Postgres so rows are fetched in batches rather than all at
+once, and each row is written and yielded to the `StreamingResponse` as soon as it's
+read. The generator opens its own DB session (rather than reusing the request's
+`Depends(get_db)` session) because FastAPI closes that session before a streamed
+response finishes sending on the pinned FastAPI version (0.115) in this project.
+
+The JSON export path is not streamed — the full result list is built in memory before
+being returned as a JSON array. Streaming a valid JSON array incrementally is more
+complex than CSV (matching brackets/commas across chunks) and was judged unnecessary
+for this exercise; if this needed to scale, NDJSON (one JSON object per line) would be
+the natural streaming alternative.
+
 ### Error handling on ingestion
 Row-level validation reports the specific invalid row and the reason it failed, but a
 validation failure anywhere in the file rolls back the entire upload — partial loads are
@@ -147,7 +162,8 @@ made it into the "current" view after a partially-failed load.
 - **Streaming file processing**: the uploaded file is read fully into memory before
   parsing, rather than processed as a stream. This is adequate for files in the 1–20MB
   range typical of this exercise; a production system ingesting much larger files would
-  switch to streaming CSV parsing to bound memory usage.
+  switch to streaming CSV parsing to bound memory usage. (Note: this applies to the
+  *upload* path only — the *export* path is streamed, see "Streaming export" above.)
 
 ## Tests
 

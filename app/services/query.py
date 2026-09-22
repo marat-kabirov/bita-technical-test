@@ -38,7 +38,7 @@ def get_current_constituents(db: Session, start_date: date, end_date: date):
         db.query(aliased_record)
         .filter(subquery.c.rn == 1)
         .order_by(aliased_record.effective_date, aliased_record.index_code, aliased_record.isin)
-        .all()
+        .yield_per(1000)
     )
 
     return results
