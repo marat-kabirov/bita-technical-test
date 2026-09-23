@@ -37,6 +37,14 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
+# The /upload and DELETE endpoints get their session via Depends(get_db), which
+# is overridden above. The export endpoints call SessionLocal() directly (see
+# app/main.py), so that module-level name must be repointed too, or export
+# tests would read from DATABASE_URL instead of TEST_DATABASE_URL whenever the
+# two differ.
+import app.main as main_module
+main_module.SessionLocal = TestSessionLocal
+
 client = TestClient(app)
 
 SAMPLE_CSV = (
