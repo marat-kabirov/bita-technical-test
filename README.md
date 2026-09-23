@@ -107,6 +107,13 @@ the window is applied so that a deleted "current" row correctly falls back to th
 most recent surviving version of the same key, rather than removing the key from the
 result entirely.
 
+`server_default=func.now()` on `ingested_at` returns the transaction's start time in
+Postgres, not the moment each individual row is written — so every row inserted within
+one upload (one transaction) shares the same `ingested_at`. The secondary sort key
+`id DESC` breaks that tie deterministically: `id` is a monotonically increasing
+surrogate key, so if the same business key appears twice within a single upload, the
+later row in the file always wins.
+
 **Note on scope — point-in-time reconstruction:** `/export` always resolves to the
 *latest* non-deleted ingested version per business key at query time. It does not
 currently support reconstructing "what the index looked like as of a past point in time"
@@ -151,6 +158,11 @@ once, and each row is written and yielded to the `StreamingResponse` as soon as 
 read. The generator opens its own DB session (rather than reusing the request's
 `Depends(get_db)` session) because FastAPI closes that session before a streamed
 response finishes sending on the pinned FastAPI version (0.115) in this project.
+
+The generator itself is a plain (synchronous) function, not wrapped in `async def`:
+Starlette runs a synchronous generator passed to `StreamingResponse` in its threadpool,
+which keeps the blocking psycopg2 calls off the main event loop — the same reason the
+request handlers above are plain `def` rather than `async def`.
 
 The JSON export path is not streamed — the full result list is built in memory before
 being returned as a JSON array. Streaming a valid JSON array incrementally is more

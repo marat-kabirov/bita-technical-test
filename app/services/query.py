@@ -1,6 +1,6 @@
 from datetime import date
 from sqlalchemy import func, and_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from app.models import ConstituentRecord
 
 
@@ -21,6 +21,10 @@ def get_current_constituents(db: Session, start_date: date, end_date: date):
         .label("rn")
     )
 
+    # Filter is_deleted BEFORE the window function. If we filtered after, a
+    # deleted "current" row would still take rn=1 and then be dropped, making
+    # the whole key vanish instead of falling back to the next most recent
+    # surviving version.
     subquery = (
         db.query(ConstituentRecord, row_number)
         .filter(
@@ -31,7 +35,6 @@ def get_current_constituents(db: Session, start_date: date, end_date: date):
         .subquery()
     )
 
-    from sqlalchemy.orm import aliased
     aliased_record = aliased(ConstituentRecord, subquery)
 
     results = (

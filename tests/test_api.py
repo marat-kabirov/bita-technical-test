@@ -216,3 +216,18 @@ def test_csv_export_content_matches_uploaded_data():
     assert float(rows["US0000000001"]["weight"]) == 10.5
     assert rows["US0000000002"]["ticker"] == "BBB"
     assert float(rows["US0000000002"]["weight"]) == 20.5
+
+
+def test_duplicate_key_in_one_upload_resolves_to_later_row():
+    csv_text = (
+        "index_code,isin,ticker,name,weight,shares,effective_date\n"
+        "TESTIDX,US0000000001,AAA,Alpha Corp,10.0,1000,2026-01-01\n"
+        "TESTIDX,US0000000001,AAA,Alpha Corp,20.0,2000,2026-01-01\n"
+    )
+    upload_csv(csv_text)
+    data = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "json"},
+    ).json()
+    assert len(data) == 1
+    assert float(data[0]["weight"]) == 20.0

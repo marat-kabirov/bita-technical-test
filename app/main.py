@@ -83,22 +83,6 @@ def _stream_csv_rows(start_date: date, end_date: date):
         db.close()
 
 
-async def stream_csv(start_date: date, end_date: date):
-    """
-    Wraps the synchronous row generator so that when the client disconnects
-    mid-stream, Starlette can call .aclose() on this async generator, which
-    in turn closes the underlying sync generator — running its `finally`
-    block (db.close()) promptly instead of waiting on garbage
-    collection.
-    """
-    gen = _stream_csv_rows(start_date, end_date)
-    try:
-        for chunk in gen:
-            yield chunk
-    finally:
-        gen.close()
-
-
 @app.get("/constituents/export")
 def export_constituents(
     start_date: date = Query(...),
@@ -114,9 +98,13 @@ def export_constituents(
         return [ConstituentOut.model_validate(r) for r in records]
 
     # format == "csv" — streamed row by row via a server-side cursor,
-    # rather than materialising the full result set and CSV buffer in memory
+    # rather than materialising the full result set and CSV buffer in memory.
+    # This is a plain (sync) generator, not wrapped in an async def: Starlette
+    # runs sync generators in its threadpool, keeping the blocking psycopg2
+    # calls off the main event loop — the same reason the handlers above are
+    # plain `def` rather than `async def`.
     return StreamingResponse(
-        stream_csv(start_date, end_date),
+        _stream_csv_rows(start_date, end_date),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=constituents_export.csv"},
     )
