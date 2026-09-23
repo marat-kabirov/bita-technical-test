@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Numeric, BigInteger, Date, DateTime,
-    Boolean, ForeignKey, Index, func
+    Boolean, ForeignKey, Index, func, text
 )
 from sqlalchemy.orm import relationship
 from app.db import Base
@@ -20,7 +20,7 @@ class Upload(Base):
 class ConstituentRecord(Base):
     __tablename__ = "constituent_records"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)
 
     index_code = Column(String, nullable=False)
     isin = Column(String, nullable=False)
@@ -42,5 +42,10 @@ class ConstituentRecord(Base):
         Index(
             "ix_constituent_business_key",
             "index_code", "isin", "effective_date", "ingested_at",
+        ),
+        Index(
+            "ix_constituent_effective_date_live",
+            "effective_date",
+            postgresql_where=text("NOT is_deleted"),
         ),
     )

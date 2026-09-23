@@ -55,8 +55,9 @@ CREATE DATABASE bita_test;
 uvicorn app.main:app --reload
 ```
 
-Tables are created automatically on startup (`Base.metadata.create_all`). No migration
-tool was used given the scope of this exercise — see "Alternatives considered" below.
+Tables are created automatically on startup, inside a FastAPI `lifespan` handler
+(`Base.metadata.create_all`). No migration tool was used given the scope of this
+exercise — see "Alternatives considered" below.
 
 Interactive API docs: http://localhost:8000/docs
 
@@ -66,17 +67,22 @@ Interactive API docs: http://localhost:8000/docs
 Accepts a `.csv` file (multipart/form-data) and loads its rows into the database.
 Every call is purely additive — no existing row is ever updated or deleted, so calling
 this endpoint multiple times with the same or an updated file preserves the full
-ingestion history.
+ingestion history. Returns `201 Created` on success, since it creates an `uploads`
+resource.
 
 ### `DELETE /constituents/{id}`
 Soft-deletes a single ingested record by its surrogate id. The underlying row is never
 physically removed — it is flagged (`is_deleted = true`, `deleted_at` set) and excluded
-from future reads via `/export`.
+from future reads via `/export`. Returns `404` if the id doesn't exist, or `409
+Conflict` if the record was already deleted (the request is well-formed, it just
+conflicts with the record's current state).
 
-### `GET /constituents/export?start_date=...&end_date=...&format=json|csv`
+### `GET /constituents/export?start_date=...&end_date=...&format=json|csv&as_of=...`
 Returns the *current* view of constituent data within the given `effective_date` range:
 for each business key (see below), only the most recently ingested, non-deleted version
-is returned. Format is selectable via the `format` query parameter.
+is returned. Format is selectable via the `format` query parameter. The optional `as_of`
+parameter reconstructs the export as it would have looked at that point in time instead
+— see "Point-in-time export" below.
 
 ## Data model
 
@@ -88,11 +94,21 @@ new record; nothing is ever updated in place.
 
 | Column                                 | Purpose                                            |
 |----------------------------------------|----------------------------------------------------|
-| `id`                                   | Surrogate primary key, identifies one ingested row |
+| `id`                                   | Surrogate primary key (`BigInteger`), identifies one ingested row |
 | `index_code`, `isin`, `effective_date` | Business key (see below)                           |
 | `ingested_at`                          | When this specific row was loaded                  |
 | `upload_id`                            | Which upload produced this row                     |
 | `is_deleted`, `deleted_at`             | Soft-delete flag, never a real DELETE              |
+
+`id` is `BigInteger` rather than the default `Integer`: this is an append-only table
+that only ever grows, so the wider range costs nothing and avoids a theoretical
+exhaustion of a 32-bit primary key over the table's lifetime.
+
+Two indexes support the export query: `ix_constituent_business_key` on
+`(index_code, isin, effective_date, ingested_at)` supports the window function's
+partition/sort, and a partial index `ix_constituent_effective_date_live` on
+`effective_date` (`WHERE NOT is_deleted`) supports the range filter that `/export`
+actually runs, which a composite index leading with `index_code` wouldn't serve well.
 
 ## Technical decisions
 
@@ -114,14 +130,15 @@ one upload (one transaction) shares the same `ingested_at`. The secondary sort k
 surrogate key, so if the same business key appears twice within a single upload, the
 later row in the file always wins.
 
-**Note on scope — point-in-time reconstruction:** `/export` always resolves to the
-*latest* non-deleted ingested version per business key at query time. It does not
-currently support reconstructing "what the index looked like as of a past point in time"
-— i.e. querying "as it was believed to be" using `ingested_at` as of some earlier moment,
-rather than always taking the latest. The append-only data model retains everything
-needed to add this (an `as_of` parameter filtering on `ingested_at` before the window
-function is applied), but implementing that query path was judged out of scope for this
-exercise.
+### Point-in-time export (`as_of`)
+`/export` normally resolves to the *latest* non-deleted ingested version per business
+key. Passing `as_of` (an ISO-8601 datetime) reconstructs the export as it would have
+looked at that earlier moment instead: only rows with `ingested_at <= as_of` are
+candidates, and a row counts as deleted only if `deleted_at <= as_of` — so a row deleted
+*after* the requested `as_of` still appears, exactly as it would have at that time. Both
+filters are applied in the same place as the normal `is_deleted` filter, before the
+window function, for the same reason described above. Without `as_of`, behaviour is
+unchanged.
 
 ### Delete semantics
 `DELETE /constituents/{id}` targets a specific ingested row by its own surrogate id, not
@@ -155,7 +172,7 @@ The CSV export path streams results row by row rather than materialising the ful
 result set in memory: `get_current_constituents` uses `yield_per(1000)`, which issues
 a server-side cursor against Postgres so rows are fetched in batches rather than all at
 once, and each row is written and yielded to the `StreamingResponse` as soon as it's
-read. The generator opens its own DB session (rather than reusing the request's
+read. The generator opens its own DB session (rather than reusing a request-scoped
 `Depends(get_db)` session) because FastAPI closes that session before a streamed
 response finishes sending on the pinned FastAPI version (0.115) in this project.
 
@@ -170,13 +187,21 @@ complex than CSV (matching brackets/commas across chunks) and was judged unneces
 for this exercise; if this needed to scale, NDJSON (one JSON object per line) would be
 the natural streaming alternative.
 
-### Error handling on ingestion
+### Error handling
 Row-level validation reports the specific invalid row and the reason it failed, but a
 validation failure anywhere in the file rolls back the entire upload — partial loads are
-never committed. **Alternative considered and discarded:** accepting valid rows and
-reporting invalid ones separately as a partial-success response. This was rejected to
-keep each upload atomic and avoid ambiguity about which rows from a single file actually
-made it into the "current" view after a partially-failed load.
+never committed. A header-only CSV (no data rows) is rejected the same way, so no empty
+`uploads` row is left behind. **Alternative considered and discarded:** accepting valid
+rows and reporting invalid ones separately as a partial-success response. This was
+rejected to keep each upload atomic and avoid ambiguity about which rows from a single
+file actually made it into the "current" view after a partially-failed load.
+
+Ingestion errors are raised in `app/services/ingest.py` as a domain-specific
+`IngestError` (not `HTTPException`), and translated to `HTTPException(400, ...)` in the
+route handler — the service layer doesn't need to know it's being called from an HTTP
+API. A global handler for `sqlalchemy.exc.OperationalError` returns `503` with a plain
+message, so a database outage surfaces as a clear, generic error instead of a raw
+traceback.
 
 ### Alternatives considered and discarded
 - **A `deleted` flag resolved *after* the window function**, rather than before: this
@@ -184,8 +209,8 @@ made it into the "current" view after a partially-failed load.
   correctly exposing the next most recent version — discarded once this edge case was
   identified.
 - **Database migrations (Alembic)**: given the scope and single-environment nature of
-  this exercise, `create_all()` on startup was judged sufficient; a real production
-  system handling schema evolution over time would use proper migrations.
+  this exercise, `create_all()` was judged sufficient; a real production system handling
+  schema evolution over time would use proper migrations.
 - **Unique constraint on the business key**: deliberately not added, since the exercise
   explicitly allows the same business key to appear multiple times across loads.
 
@@ -202,7 +227,11 @@ first.
 
 Covers: CSV ingestion (row counts persisted correctly), repeated uploads not overwriting
 prior data, soft-delete behavior (both hiding from export and physical persistence in
-the database), current-resolution/export logic including the delete-then-fallback edge
-case, a deterministic tie-break when the same business key appears twice within a single
-upload, atomic rollback on invalid rows (no `uploads` or `constituent_records` rows left
-behind), and CSV export content (parsed and checked against the uploaded values).
+the database, and rejecting a second delete with `409`), current-resolution/export logic
+including the delete-then-fallback edge case, a deterministic tie-break when the same
+business key appears twice within a single upload, atomic rollback on invalid rows (no
+`uploads` or `constituent_records` rows left behind, including for a header-only CSV),
+CSV export content (parsed and checked against the uploaded values), input validation
+(non-`.csv` filename, missing required column, non-UTF-8 payload, `NaN`/negative
+`weight`, negative `shares`, `start_date > end_date`), and point-in-time export via
+`as_of` (both for a superseded value and for a since-deleted row).

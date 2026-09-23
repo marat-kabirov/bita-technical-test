@@ -1,5 +1,8 @@
 import io
 import os
+import time
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -65,7 +68,7 @@ def upload_csv(content: str, filename: str = "test.csv"):
 
 def test_upload_ingests_all_rows():
     response = upload_csv(SAMPLE_CSV)
-    assert response.status_code == 200
+    assert response.status_code == 201
     body = response.json()
     assert body["rows_ingested"] == 2
     assert body["upload_id"] is not None
@@ -231,3 +234,149 @@ def test_duplicate_key_in_one_upload_resolves_to_later_row():
     ).json()
     assert len(data) == 1
     assert float(data[0]["weight"]) == 20.0
+
+
+def test_delete_already_deleted_returns_409():
+    upload_csv(SAMPLE_CSV)
+    export = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "json"},
+    ).json()
+    record_id = export[0]["id"]
+
+    client.delete(f"/constituents/{record_id}")
+    second_delete = client.delete(f"/constituents/{record_id}")
+    assert second_delete.status_code == 409
+
+
+def test_weight_nan_rejected():
+    bad_csv = (
+        "index_code,isin,ticker,name,weight,shares,effective_date\n"
+        "TESTIDX,US0000000001,AAA,Alpha Corp,NaN,1000,2026-01-01\n"
+    )
+    response = upload_csv(bad_csv, filename="bad.csv")
+    assert response.status_code == 400
+    assert "weight" in response.json()["detail"]
+
+
+def test_weight_negative_rejected():
+    bad_csv = (
+        "index_code,isin,ticker,name,weight,shares,effective_date\n"
+        "TESTIDX,US0000000001,AAA,Alpha Corp,-5,1000,2026-01-01\n"
+    )
+    response = upload_csv(bad_csv, filename="bad.csv")
+    assert response.status_code == 400
+    assert "weight" in response.json()["detail"]
+
+
+def test_shares_negative_rejected():
+    bad_csv = (
+        "index_code,isin,ticker,name,weight,shares,effective_date\n"
+        "TESTIDX,US0000000001,AAA,Alpha Corp,10.5,-100,2026-01-01\n"
+    )
+    response = upload_csv(bad_csv, filename="bad.csv")
+    assert response.status_code == 400
+    assert "shares" in response.json()["detail"]
+
+
+def test_header_only_csv_rejected():
+    header_only = "index_code,isin,ticker,name,weight,shares,effective_date\n"
+    response = upload_csv(header_only, filename="empty.csv")
+    assert response.status_code == 400
+    assert "no data rows" in response.json()["detail"]
+
+    db = TestSessionLocal()
+    try:
+        assert db.query(models.Upload).count() == 0
+    finally:
+        db.close()
+
+
+def test_start_date_after_end_date_rejected():
+    response = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-02", "end_date": "2026-01-01", "format": "json"},
+    )
+    assert response.status_code == 400
+
+
+def test_non_csv_filename_rejected():
+    response = upload_csv(SAMPLE_CSV, filename="data.txt")
+    assert response.status_code == 400
+
+
+def test_missing_column_rejected():
+    bad_csv = "index_code,isin,ticker,name,weight,shares\nTESTIDX,US0000000001,AAA,Alpha Corp,10.5,1000\n"
+    response = upload_csv(bad_csv, filename="bad.csv")
+    assert response.status_code == 400
+    assert "effective_date" in response.json()["detail"]
+
+
+def test_non_utf8_payload_rejected():
+    bad_bytes = (
+        b"index_code,isin,ticker,name,weight,shares,effective_date\n"
+        + b"\xff\xfe"
+        + b",US1,AAA,X,1,1,2026-01-01\n"
+    )
+    response = client.post(
+        "/upload",
+        files={"file": ("bad.csv", io.BytesIO(bad_bytes), "text/csv")},
+    )
+    assert response.status_code == 400
+    assert "UTF-8" in response.json()["detail"]
+
+
+def test_as_of_returns_previous_version():
+    upload_csv(SAMPLE_CSV)
+    t1 = datetime.now(timezone.utc)
+    time.sleep(0.05)
+    upload_csv(SAMPLE_CSV_UPDATED)
+
+    as_of_export = client.get(
+        "/constituents/export",
+        params={
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-01",
+            "format": "json",
+            "as_of": t1.isoformat(),
+        },
+    ).json()
+    weights = {row["isin"]: float(row["weight"]) for row in as_of_export}
+    assert weights["US0000000001"] == 10.5
+
+    latest_export = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "json"},
+    ).json()
+    weights_latest = {row["isin"]: float(row["weight"]) for row in latest_export}
+    assert weights_latest["US0000000001"] == 15.0
+
+
+def test_as_of_shows_deleted_row():
+    upload_csv(SAMPLE_CSV)
+    export = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "json"},
+    ).json()
+    record_id = next(row["id"] for row in export if row["isin"] == "US0000000001")
+
+    t1 = datetime.now(timezone.utc)
+    time.sleep(0.05)
+    client.delete(f"/constituents/{record_id}")
+
+    as_of_export = client.get(
+        "/constituents/export",
+        params={
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-01",
+            "format": "json",
+            "as_of": t1.isoformat(),
+        },
+    ).json()
+    assert any(row["isin"] == "US0000000001" for row in as_of_export)
+
+    latest_export = client.get(
+        "/constituents/export",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-01", "format": "json"},
+    ).json()
+    assert not any(row["isin"] == "US0000000001" for row in latest_export)
