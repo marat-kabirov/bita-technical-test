@@ -12,15 +12,16 @@ from app.main import app
 from app.db import Base, get_db
 from app import models
 
-# Tests run against TEST_DATABASE_URL if set, falling back to DATABASE_URL only if not.
-# WARNING: this fixture calls drop_all() on whatever database this resolves to.
-# Do NOT run the test suite against a database whose data you want to keep.
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+# TEST_DATABASE_URL must be set explicitly — there is no fallback to
+# DATABASE_URL. Falling back to the application's own database would let a
+# routine test run silently wipe production/dev data via the drop_all()
+# fixture below.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 if not TEST_DATABASE_URL:
     raise RuntimeError(
-        "TEST_DATABASE_URL (or DATABASE_URL) must be set to run the test suite. "
-        "This database WILL be wiped by the tests — do not point it at data you need."
+        "TEST_DATABASE_URL must be set explicitly to run the test suite (no "
+        "fallback to DATABASE_URL). This database WILL be wiped by the tests."
     )
 
 test_engine = create_engine(TEST_DATABASE_URL)
